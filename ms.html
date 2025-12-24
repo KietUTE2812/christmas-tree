@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ngân Khùng By Tonkiettyphu</title>
+    <style>
+        /* 4. 丰富背景层次：使用深邃的蓝紫渐变背景，增加氛围感 */
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: radial-gradient(circle at center, #1a0f2e 0%, #090514 60%, #000000 100%);
+            font-family: 'Courier New', serif; 
+        }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        #ui {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2;
+            display: flex; flex-direction: column; justify-content: space-between; padding: 20px; box-sizing: border-box;
+        }
+        /* 5. UI 字体升级：更亮、更强的金色光晕 */
+        .header { text-align: center; color: #FFD700; text-shadow: 0 0 15px rgba(255, 215, 0, 0.8), 0 0 30px rgba(255, 165, 0, 0.6); }
+        h1 { margin: 0; font-weight: 300; letter-spacing: 5px; text-transform: uppercase; font-size: 2.5rem; }
+        .status { color: rgba(255,255,255,0.8); font-size: 0.9rem; margin-top: 10px; font-weight: bold;}
+        
+        #cam-preview {
+            position: absolute; bottom: 20px; left: 20px; width: 160px; height: 120px; 
+            border: 2px solid rgba(255, 215, 0, 0.5); border-radius: 8px; overflow: hidden;
+            transform: scaleX(-1); box-shadow: 0 0 15px rgba(255, 215, 0, 0.3);
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+
+        #upload-container {
+            pointer-events: auto; position: absolute; bottom: 20px; right: 20px;
+            background: rgba(255,215,0,0.15); backdrop-filter: blur(10px);
+            padding: 12px 24px; border: 2px solid rgba(255, 215, 0, 0.6); border-radius: 30px;
+            cursor: pointer; transition: all 0.3s;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.4);
+        }
+        #upload-container:hover { background: rgba(255, 215, 0, 0.3); border-color: #FFD700; box-shadow: 0 0 30px rgba(255, 215, 0, 0.6); }
+        input[type="file"] { display: none; }
+        .btn-text { color: #FFD700; font-size: 1rem; letter-spacing: 2px; font-weight: bold; text-shadow: 0 0 5px rgba(255,215,0,0.5);}
+
+        #loader {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10;
+            background: #000; display: flex; align-items: center; justify-content: center;
+            color: #FFD700; transition: opacity 0.5s; font-size: 1.5rem; letter-spacing: 3px;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.8);
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/+esm",
+                "gsap": "https://unpkg.com/gsap@3.12.5/index.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loader">IGNITING FESTIVE MAGIC...</div>
+
+    <audio id="bgm" src="./music.mp3" loop hidden></audio>
+
+    <div id="ui">
+        <div class="header">
+            <h1>Ngân Khùng</h1>
+            <div class="status" id="status-text">Waiting for camera...</div>
+            <div class="status" style="font-size: 0.7rem; color: #aaa;">✊ NẮM: Cây | 🖐 BÀN TAY: Rải | ✌️ 2 NGÓN: Tập Trung Ảnh</div>
+        </div>
+        
+        <div id="cam-preview">
+            <video id="webcam" autoplay playsinline></video>
+        </div>
+
+        <div id="upload-container" onclick="document.getElementById('file-input').click()">
+            <span class="btn-text">TẢI ẢNH LÊN</span>
+            <input type="file" id="file-input" multiple accept="image/*">
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { FilesetResolver, GestureRecognizer } from '@mediapipe/tasks-vision';
+        import gsap from 'gsap';
+
+        // --- CONFIG (色彩更饱和) ---
+        const CONF = {
+            particleCount: 3500, // 稍微增加粒子数量
+            // 使用更鲜艳、饱和度更高的颜色
+            colors: [0x006400, 0xFFC125, 0xDC143C, 0xF0F8FF], // Deep Green, Rich Gold, Crimson Red, Alice Blue
+            treeHeight: 25,
+            treeRadius: 10,
+            scatterRadius: 30
+        };
+
+        let scene, camera, renderer, composer, controls;
+        let particlesMesh, dummy = new THREE.Object3D();
+        let photos = [];
+        let photoGroup = new THREE.Group();
+        let gestureRecognizer;
+        let runningMode = "VIDEO";
+        let webcamRunning = false;
+        let lastVideoTime = -1;
+        let currentGesture = "None";
+        let state = "TREE";
+        let targetRotationY = 0;
+        
+        const particlesData = [];
+
+        async function init() {
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            // 移除雾效，让背景的渐变显露出来，增加通透感
+            // scene.fog = new THREE.FogExp2(0x050505, 0.02); 
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 40);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            // 使用 ACESFilmic 使得高光过渡更自然
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2; // 稍微提高曝光
+            container.appendChild(renderer.domElement);
+
+            // --- 2. 强化辉光特效 (Bloom) ---
+            const renderScene = new RenderPass(scene, camera);
+            // 参数调整：强度(strength)和半径(radius)大幅增加
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 2.5, 0.8, 0.85);
+            bloomPass.threshold = 0.1; // 降低阈值，让更多物体发光
+            bloomPass.strength = 2.5;  // 提高强度，制造强烈的光晕
+            bloomPass.radius = 0.8;    // 增半径，让光晕更柔和
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // --- 3. 提升灯光系统 ---
+            const ambientLight = new THREE.AmbientLight(0x404040, 1.0); // 环境光亮度（继续调低保护照片）
+            scene.add(ambientLight);
+
+            // 主金色光源
+            const pointLight = new THREE.PointLight(0xFFD700, 5, 150); // 提高强度和范围
+            pointLight.position.set(10, 20, 20);
+            scene.add(pointLight);
+            
+            // 辅助暖红光源，增加色彩层次
+            const pointLight2 = new THREE.PointLight(0xFF4500, 3, 150);
+            pointLight2.position.set(-15, -10, 15);
+            scene.add(pointLight2);
+            
+            // 顶部冷光，勾勒轮廓
+            const topLight = new THREE.DirectionalLight(0xAABBFF, 2);
+            topLight.position.set(0, 50, 0);
+            scene.add(topLight);
+
+            createParticles();
+            scene.add(photoGroup);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+
+            await setupMediaPipe();
+
+            window.addEventListener('resize', onWindowResize);
+            document.getElementById('file-input').addEventListener('change', handleFileUpload);
+
+            document.getElementById('loader').style.opacity = 0;
+            setTimeout(() => document.getElementById('loader').style.display = 'none', 500);
+            animate();
+        }
+
+        // --- 1. 增强材质的自发光 (Emissive) ---
+        function createParticles() {
+            const geometry = new THREE.SphereGeometry(0.25, 12, 12); // 稍微增大粒子并增加面数
+            const material = new THREE.MeshStandardMaterial({
+                color: 0xffffff,
+                roughness: 0.3, // 更光滑
+                metalness: 0.9, // 更强的金属感
+                emissive: 0x333333, // 基础自发光
+                emissiveIntensity: 0.2
+            });
+
+            particlesMesh = new THREE.InstancedMesh(geometry, material, CONF.particleCount);
+            
+            const color = new THREE.Color();
+            const emissiveColor = new THREE.Color();
+
+            for (let i = 0; i < CONF.particleCount; i++) {
+                // ... (位置计算逻辑不变)
+                const y = Math.random() * CONF.treeHeight - CONF.treeHeight / 2;
+                const normY = (y + CONF.treeHeight / 2) / CONF.treeHeight;
+                const r = (1 - normY) * CONF.treeRadius;
+                const theta = Math.random() * Math.PI * 2 * 7; // 增加螺旋圈数
+                
+                const treeX = r * Math.cos(theta) + (Math.random()-0.5)*0.5; // 加一点随机抖动
+                const treeZ = r * Math.sin(theta) + (Math.random()-0.5)*0.5;
+                const treePos = new THREE.Vector3(treeX, y, treeZ);
+
+                const phi = Math.acos(-1 + (2 * i) / CONF.particleCount);
+                const sqrtPhi = Math.sqrt(CONF.particleCount * Math.PI) * phi;
+                const sx = CONF.scatterRadius * Math.cos(sqrtPhi) * Math.sin(phi);
+                const sy = CONF.scatterRadius * Math.sin(sqrtPhi) * Math.sin(phi);
+                const sz = CONF.scatterRadius * Math.cos(phi);
+                const scatterPos = new THREE.Vector3(sx, sy, sz);
+
+                dummy.position.copy(treePos);
+                // 随机缩放，增加层次感
+                const scale = Math.random() * 0.4 + 0.8;
+                dummy.scale.setScalar(scale);
+                dummy.updateMatrix();
+                particlesMesh.setMatrixAt(i, dummy.matrix);
+
+                // 设置颜色和强发光
+                const colorHex = CONF.colors[Math.floor(Math.random() * CONF.colors.length)];
+                color.setHex(colorHex);
+                
+                // 30% 的粒子作为高亮"灯珠"
+                if (Math.random() > 0.7) {
+                    // 使用金色或红色作为高亮发光色
+                    const isGold = Math.random() > 0.5;
+                    emissiveColor.setHex(isGold ? 0xFFD700 : 0xFF0000);
+                    // 极大地提高发光强度，配合 Bloom 产生耀眼效果
+                    particlesMesh.setColorAt(i, emissiveColor.multiplyScalar(2)); 
+                } else {
+                    particlesMesh.setColorAt(i, color);
+                }
+
+                particlesData.push({
+                    treePos: treePos,
+                    scatterPos: scatterPos,
+                    currentPos: treePos.clone(),
+                    velocity: new THREE.Vector3(),
+                    offset: Math.random() * 100,
+                    baseScale: scale // 存储基础缩放值
+                });
+            }
+
+            particlesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            scene.add(particlesMesh);
+        }
+
+        function createPhoto(imgUrl) {
+            // 使用回调函数：只有当图片加载完毕后(texture)，才会执行花括号里的代码
+            new THREE.TextureLoader().load(imgUrl, (texture) => {
+                texture.colorSpace = THREE.SRGBColorSpace;
+                
+                // 1. 获取图片实际长宽比
+                const img = texture.image;
+                let aspectRatio = 1;
+                if (img.width && img.height) {
+                    aspectRatio = img.width / img.height;
+                }
+
+                // 2. 设定最大尺寸限制 (类似 CSS 的 max-width/max-height)
+                const MAX_SIZE = 4; // 设定一个基准尺寸
+                
+                let width, height;
+
+                // 简单的自适应算法：
+                // 如果是宽图 (Landscape)
+                if (aspectRatio >= 1) {
+                    width = MAX_SIZE;
+                    height = MAX_SIZE / aspectRatio;
+                } 
+                // 如果是长图 (Portrait)
+                else {
+                    height = MAX_SIZE;
+                    width = MAX_SIZE * aspectRatio;
+                }
+                
+                const geometry = new THREE.PlaneGeometry(width, height);
+                
+                // --- 材质设置 (保持之前的暗灰色防过曝) ---
+                const material = new THREE.MeshBasicMaterial({ 
+                    map: texture, 
+                    side: THREE.FrontSide, 
+                    transparent: true,
+                    opacity: 1.0,
+                    color: 0x777777 // 暗灰色
+                });
+
+                // --- 背面金板 (需要跟着改变尺寸) ---
+                const glowMaterial = new THREE.MeshStandardMaterial({ 
+                    color: 0xFFD700,      // 亮金色
+                    side: THREE.BackSide, 
+                    metalness: 1.0,       
+                    roughness: 0.2,       // 更光滑，产生高光
+                    emissive: 0xCC8800,   // 暗金色自发光
+                    emissiveIntensity: 0.3 // 降低自发光强度
+                });
+
+                const glowMesh = new THREE.Mesh(geometry, glowMaterial);
+                glowMesh.position.z = -0.01; 
+                
+                const mesh = new THREE.Group();
+                mesh.add(new THREE.Mesh(geometry, material));
+                mesh.add(glowMesh);
+                
+                // --- 设置随机位置 ---
+                mesh.position.set(
+                    (Math.random() - 0.5) * 20,
+                    (Math.random() - 0.5) * 20,
+                    (Math.random() - 0.5) * 20
+                );
+                
+                mesh.userData = {
+                    treePos: new THREE.Vector3(
+                        (Math.random() - 0.5) * CONF.treeRadius * 1.2, 
+                        (Math.random() - 0.5) * CONF.treeHeight * 0.8, 
+                        CONF.treeRadius + 3
+                    ),
+                    scatterPos: mesh.position.clone(),
+                    // 记录原始比例，防止动画缩放时变形
+                    originalScale: new THREE.Vector3(1, 1, 1), 
+                    isFocused: false
+                };
+
+                photos.push(mesh);
+                photoGroup.add(mesh);
+            });
+        }
+
+        async function setupMediaPipe() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+            );
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+                    delegate: "GPU"
+                },
+                runningMode: runningMode
+            });
+
+            const video = document.getElementById("webcam");
+            const constraints = { video: true };
+            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                video.srcObject = stream;
+                webcamRunning = true;
+            });
+        }
+
+        async function predictWebcam() {
+            const video = document.getElementById("webcam");
+            if (!gestureRecognizer || !webcamRunning || video.videoWidth === 0) return;
+
+            let nowInMs = Date.now();
+            if (video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                const results = gestureRecognizer.recognizeForVideo(video, nowInMs);
+
+                const statusText = document.getElementById('status-text');
+                
+                if (results.gestures.length > 0) {
+                    const category = results.gestures[0][0].categoryName;
+                    const hand = results.landmarks[0];
+                    currentGesture = category;
+
+                    if (category === "Closed_Fist") {
+                        state = "TREE";
+                        statusText.innerText = "State: TREE (Coalescing)";
+                        statusText.style.color = "#00FF7F"; // Spring Green
+                        controls.autoRotate = true;
+                    } else if (category === "Open_Palm") {
+                        state = "SCATTER";
+                        statusText.innerText = "State: SCATTER (Exploding)";
+                        statusText.style.color = "#FFD700"; // Gold
+                        controls.autoRotate = false;
+                        
+                        if(hand) {
+                            const wrist = hand[0];
+                            targetRotationY = (wrist.x - 0.5) * 8; // 增加旋转灵敏度
+                        }
+
+                    } else if (category === "Victory" || category === "Thumb_Up") {
+                        state = "FOCUS";
+                        statusText.innerText = "State: MEMORY (Focusing)";
+                        statusText.style.color = "#FF4500"; // Orange Red
+                        controls.autoRotate = false;
+                    }
+                } else {
+                    currentGesture = "None";
+                    targetRotationY = 0;
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            predictWebcam();
+            
+            const time = performance.now() * 0.001;
+
+            updateParticles(time);
+            updatePhotos(time);
+
+            if (state === "SCATTER") {
+                scene.rotation.y += (targetRotationY - scene.rotation.y) * 0.08;
+            } else if (state === "TREE" && controls.autoRotate) {
+                // OrbitControls handles auto-rotation
+            }
+
+            controls.update();
+            // 使用 composer 渲染以应用辉光效果
+            composer.render();
+        }
+
+        function updateParticles(time) {
+            for (let i = 0; i < CONF.particleCount; i++) {
+                const data = particlesData[i];
+                let target;
+
+                if (state === "TREE" || state === "FOCUS") {
+                    target = data.treePos;
+                } else {
+                    target = data.scatterPos;
+                }
+
+                data.currentPos.lerp(target, 0.04); // 稍微加快聚合速度
+
+                if (state === "SCATTER") {
+                    data.currentPos.y += Math.sin(time + data.offset) * 0.03;
+                    data.currentPos.x += Math.cos(time + data.offset * 0.5) * 0.02;
+                }
+
+                dummy.position.copy(data.currentPos);
+                
+                // 动态缩放：在树形态下有轻微呼吸感，在散开形态下随机闪烁
+                let scaleVariation = Math.sin(time * 2 + data.offset) * 0.1;
+                if (state === "SCATTER") scaleVariation = Math.sin(time * 5 + i) * 0.3;
+                
+                dummy.scale.setScalar(data.baseScale + scaleVariation);
+                
+                dummy.updateMatrix();
+                particlesMesh.setMatrixAt(i, dummy.matrix);
+            }
+            particlesMesh.instanceMatrix.needsUpdate = true;
+        }
+
+        function updatePhotos(time) {
+            if (photos.length === 0) return;
+
+            photos.forEach((photoGroup, index) => {
+                let targetPos, targetScale, targetRot;
+                const photo = photoGroup.children[0]; // Access the photo mesh inside the group
+
+                if (state === "FOCUS") {
+                    const focusIndex = Math.floor(time * 0.4) % photos.length; 
+                    
+                    if (index === focusIndex) {
+                        const camDir = new THREE.Vector3();
+                        camera.getWorldDirection(camDir);
+                        targetPos = camera.position.clone().add(camDir.multiplyScalar(12));
+                        targetScale = new THREE.Vector3(2.5, 2.5, 2.5);
+                        photoGroup.lookAt(camera.position);
+                    } else {
+                        targetPos = photoGroup.userData.scatterPos.clone().multiplyScalar(1.5); // Push further back
+                        targetScale = new THREE.Vector3(0.3, 0.3, 0.3);
+                    }
+                } else if (state === "TREE") {
+                    const theta = time * 0.15 + (index / photos.length) * Math.PI * 4;
+                    const r = CONF.treeRadius + 3 + Math.sin(time + index)*0.5;
+                    const h = (index / photos.length - 0.5) * CONF.treeHeight * 0.8;
+                    targetPos = new THREE.Vector3(Math.cos(theta) * r, h, Math.sin(theta) * r);
+                    targetScale = new THREE.Vector3(0.8, 0.8, 0.8);
+                    photoGroup.lookAt(new THREE.Vector3(0, targetPos.y, 0));
+                    photoGroup.rotateY(Math.PI); // Flip to face outwards
+                } else {
+                    targetPos = photoGroup.userData.scatterPos;
+                    targetPos.y += Math.sin(time + index) * 0.08;
+                    targetPos.x += Math.cos(time + index * 0.5) * 0.05;
+                    targetScale = new THREE.Vector3(1.2, 1.2, 1.2);
+                    photoGroup.lookAt(camera.position);
+                }
+
+                photoGroup.position.lerp(targetPos, 0.04);
+                photoGroup.scale.lerp(targetScale, 0.04);
+            });
+        }
+
+        function handleFileUpload(event) {
+            const files = event.target.files;
+            if (files.length > 0) {
+                // 1. 处理图片逻辑 (保持不变)
+                for (let file of files) {
+                    const url = URL.createObjectURL(file);
+                    createPhoto(url);
+                }
+                state = "TREE";
+                controls.autoRotate = true;
+
+                // --- 核心新增：开始播放音乐 ---
+                const audio = document.getElementById('bgm');
+                // 设置音量 (0.0 到 1.0)，建议 0.5 比较柔和
+                audio.volume = 0.5; 
+                
+                // 尝试播放
+                audio.play().then(() => {
+                    console.log("Music started!");
+                    // 可选：让音乐淡入 (Fade In)
+                    gsap.fromTo(audio, {volume: 0}, {volume: 0.5, duration: 3});
+                }).catch(error => {
+                    console.error("音乐播放失败:", error);
+                    // 如果因为浏览器策略失败，可以在这里提示用户手动点击
+                });
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+    </script>
+</body>
+</html>
